@@ -1,91 +1,65 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import type { Content } from '@google/generative-ai';
 import { NextRequest, NextResponse } from 'next/server';
-import { SYSTEM_PROMPT, TOOLS, processToolCall } from '@/lib/agent';
+import { SYSTEM_PROMPT, GEMINI_TOOLS, processToolCall } from '@/lib/agent';
 import type { ToolResult } from '@/lib/types';
 
-const client = new Anthropic();
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY!);
 
 export async function POST(req: NextRequest) {
   try {
     const { history, newMessage } = (await req.json()) as {
-      history: Anthropic.MessageParam[];
+      history: Content[];
       newMessage: string;
     };
 
-    const messages: Anthropic.MessageParam[] = [
-      ...history,
-      { role: 'user', content: newMessage },
-    ];
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.0-flash',
+      systemInstruction: SYSTEM_PROMPT,
+      tools: GEMINI_TOOLS,
+    });
+
+    const chat = model.startChat({ history });
 
     const toolResults: ToolResult[] = [];
     let responseText = '';
-    let cachedTokens = 0;
+    let iterations = 0;
+
+    let result = await chat.sendMessage(newMessage);
 
     // Agentic loop
-    while (true) {
-      const response = await client.messages.create({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 4096,
-        system: [
-          {
-            type: 'text',
-            text: SYSTEM_PROMPT,
-            cache_control: { type: 'ephemeral' },
-          },
-        ],
-        tools: TOOLS.map((tool, index) =>
-          index === TOOLS.length - 1
-            ? { ...tool, cache_control: { type: 'ephemeral' as const } }
-            : tool
-        ),
-        messages,
-      });
+    while (iterations < 10) {
+      iterations++;
+      const functionCalls = result.response.functionCalls();
 
-      if (response.usage) {
-        cachedTokens = response.usage.cache_read_input_tokens ?? 0;
-      }
+      if (functionCalls && functionCalls.length > 0) {
+        const responseParts = functionCalls.map((call) => {
+          const toolResult = processToolCall(
+            call.name,
+            call.args as Record<string, unknown>
+          );
+          toolResults.push(toolResult);
+          return {
+            functionResponse: {
+              name: call.name,
+              response: { result: toolResult.data },
+            },
+          };
+        });
 
-      if (response.stop_reason === 'tool_use') {
-        const assistantContent = response.content;
-        messages.push({ role: 'assistant', content: assistantContent });
-
-        const toolResultContent: Anthropic.ToolResultBlockParam[] = [];
-
-        for (const block of assistantContent) {
-          if (block.type === 'text' && block.text) {
-            responseText += block.text;
-          } else if (block.type === 'tool_use') {
-            const result = processToolCall(
-              block.name,
-              block.input as Record<string, unknown>
-            );
-            toolResults.push(result);
-            toolResultContent.push({
-              type: 'tool_result',
-              tool_use_id: block.id,
-              content: JSON.stringify(result.data),
-            });
-          }
-        }
-
-        messages.push({ role: 'user', content: toolResultContent });
+        result = await chat.sendMessage(responseParts);
       } else {
-        // end_turn
-        for (const block of response.content) {
-          if (block.type === 'text') {
-            responseText += block.text;
-          }
-        }
-        messages.push({ role: 'assistant', content: response.content });
+        responseText = result.response.text();
         break;
       }
     }
 
+    const updatedHistory = await chat.getHistory();
+
     return NextResponse.json({
       text: responseText,
       toolResults,
-      history: messages,
-      cachedTokens,
+      history: updatedHistory,
     });
   } catch (error) {
     console.error('Chat API error:', error);

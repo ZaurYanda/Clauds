@@ -3,14 +3,13 @@
 import { useState, useRef, useEffect } from 'react';
 import type { DisplayMessage } from '@/lib/types';
 import ToolDisplay from './ToolDisplay';
-import Anthropic from '@anthropic-ai/sdk';
 
 export default function ChatInterface() {
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
-  const [history, setHistory] = useState<Anthropic.MessageParam[]>([]);
+  const [history, setHistory] = useState<unknown[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [cachedTokens, setCachedTokens] = useState(0);
+  const [cachedTokens] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const initialized = useRef(false);
@@ -49,7 +48,6 @@ export default function ChatInterface() {
 
       setMessages((prev) => [...prev, assistantMsg]);
       setHistory(data.history);
-      if (data.cachedTokens) setCachedTokens(data.cachedTokens);
     } catch {
       const errMsg: DisplayMessage = {
         id: crypto.randomUUID(),
